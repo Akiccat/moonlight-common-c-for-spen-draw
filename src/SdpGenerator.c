@@ -3,6 +3,18 @@
 
 #define MAX_OPTION_NAME_LEN 128
 
+// SuperSun: per-link bitrate ceilings (Kbps). See generateSdpAttributes().
+//
+// NOTE: this ceiling does *not* gate Sunshine. Sunshine reads
+// x-ml-video.configuredBitrateKbps (sent below from StreamConfig.bitrate, the raw
+// user value, untouched by this clamp) and caps that against the host's own
+// max_bitrate. What this clamp does gate is the x-nv-vqos maximumBitrateKbps /
+// initialBitrateKbps pair, i.e. GFE hosts. Widening it keeps the two paths from
+// disagreeing and lets a GFE host use the link too.
+#define MAX_GFE_BITRATE_KBPS 100000      // NVIDIA GFE really does self-limit here
+#define MAX_REMOTE_BITRATE_KBPS 150000   // Sunshine over WAN - protect others' uplinks
+#define MAX_LOCAL_BITRATE_KBPS 800000    // Sunshine over LAN/USB - Sunshine's own accepted range
+
 #define MAX_SDP_HEADER_LEN 128
 #define MAX_SDP_TAIL_LEN 128
 
@@ -422,7 +434,22 @@ static PSDP_OPTION getAttributesList(char*urlSafeAddr) {
     // GFE currently imposes a limit of 100 Mbps for the video bitrate. It will automatically
     // impose that on maximumBitrateKbps but not on initialBitrateKbps. We will impose the cap
     // ourselves so initialBitrateKbps does not exceed maximumBitrateKbps.
-    adjustedBitrate = adjustedBitrate > 100000 ? 100000 : adjustedBitrate;
+    //
+    // SuperSun: that is a GeForce Experience *server-side* policy, so keep it for GFE and
+    // pick a ceiling per link type for Sunshine instead of inheriting it unconditionally.
+    if (IS_SUNSHINE()) {
+        int maxBitrateKbps = (StreamConfig.streamingRemotely == STREAM_CFG_LOCAL) ?
+                                 MAX_LOCAL_BITRATE_KBPS : MAX_REMOTE_BITRATE_KBPS;
+
+        if (adjustedBitrate > maxBitrateKbps) {
+            Limelog("Requested bitrate %d Kbps exceeds %d Kbps ceiling for this link type; clamping\n",
+                    StreamConfig.bitrate, maxBitrateKbps);
+            adjustedBitrate = maxBitrateKbps;
+        }
+    }
+    else {
+        adjustedBitrate = adjustedBitrate > MAX_GFE_BITRATE_KBPS ? MAX_GFE_BITRATE_KBPS : adjustedBitrate;
+    }
 
     // We don't support dynamic bitrate scaling properly (it tends to bounce between min and max and never
     // settle on the optimal bitrate if it's somewhere in the middle), so we'll just latch the bitrate
